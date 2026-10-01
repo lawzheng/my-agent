@@ -8,6 +8,9 @@ dist/
 build/
 coverage/
 
+# Local teaching-agent session data
+.teaching-agent/
+
 # Tool caches
 .vite/
 .cache/

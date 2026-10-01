@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { rm } from "node:fs/promises";
-import { resolve as resolvePath } from "node:path";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { join, resolve as resolvePath } from "node:path";
+import { tmpdir } from "node:os";
 import { runAgentLoop } from "./agent/loop";
-import { createUserMessage, messageText } from "./agent/message";
+import { createAssistantMessage, createUserMessage, messageText, text } from "./agent/message";
 import { MockModel } from "./agent/mockModel";
+import { JsonlSessionStore } from "./agent/sessionStore";
 import { createToolRegistry } from "./agent/tools";
 
 const registry = createToolRegistry(resolvePath(process.cwd(), "workspace"));
@@ -60,4 +62,44 @@ assert.deepEqual(result.newMessages.map((message) => message.role), ["assistant"
 assert.match(messageText(result.newMessages[2]), /Agent Loop/);
 assert.ok(result.events.some((event) => event.type === "tool_execution_start"));
 assert.ok(result.events.some((event) => event.type === "tool_execution_end"));
-console.log("Step 3 smoke checks passed.");
+
+const sessionDirectory = await mkdtemp(join(tmpdir(), "teaching-agent-session-"));
+const sessionFile = join(sessionDirectory, "session.jsonl");
+try {
+  const store = new JsonlSessionStore(sessionFile, process.cwd());
+  const firstId = await store.appendMessage(createUserMessage("hello"));
+  const secondId = await store.appendMessage(createAssistantMessage([text("hello back")]));
+  await store.appendMessage(createUserMessage("continue"));
+  assert.equal(firstId, "entry_1");
+  assert.equal(secondId, "entry_2");
+  assert.equal(store.buildContext().length, 3);
+
+  const reopened = new JsonlSessionStore(sessionFile, process.cwd());
+  await reopened.initialize();
+  assert.equal(reopened.buildContext().length, 3);
+  await reopened.appendMessage(createUserMessage("after restart"));
+
+  const jsonlEntries = (await readFile(sessionFile, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(jsonlEntries[0].type, "session");
+  assert.equal(jsonlEntries[1].parentId, null);
+  assert.equal(jsonlEntries[2].parentId, firstId);
+  assert.equal(jsonlEntries[4].parentId, "entry_3");
+
+  const compaction = await reopened.compactIfNeeded(1, 1);
+  assert.ok(compaction);
+  assert.equal(reopened.buildContext().length, 2);
+  assert.match(messageText(reopened.buildContext()[0]), /user: hello/);
+
+  await reopened.reset();
+  assert.equal(reopened.buildContext().length, 0);
+  const resetEntries = (await readFile(sessionFile, "utf8")).trim().split("\n");
+  assert.equal(resetEntries.length, 1);
+  assert.equal(JSON.parse(resetEntries[0]).type, "session");
+} finally {
+  await rm(sessionDirectory, { recursive: true, force: true });
+}
+
+console.log("Step 3 and Step 4 smoke checks passed.");
