@@ -21,7 +21,7 @@ export class MockModel implements TeachingModel {
     const filePath = prompt.match(/[\w./-]+\.[\w]+/)?.[0];
     let toolCall: ToolCallContent | undefined;
 
-    if (prompt.includes("读取") || filePath) {
+    if (prompt.includes("读取")) {
       toolCall = {
         type: "toolCall",
         id: this.createCallId(),
@@ -33,7 +33,14 @@ export class MockModel implements TeachingModel {
         type: "toolCall",
         id: this.createCallId(),
         name: "write_note",
-        arguments: { path: "agent-notes.md", content: prompt },
+        arguments: { fileName: filePath ?? "agent-note.md", content: prompt },
+      };
+    } else if (filePath) {
+      toolCall = {
+        type: "toolCall",
+        id: this.createCallId(),
+        name: "read_file",
+        arguments: { path: filePath },
       };
     } else if (prompt.includes("列出") || prompt.includes("文件")) {
       toolCall = {
