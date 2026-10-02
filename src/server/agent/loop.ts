@@ -1,12 +1,13 @@
 import type {
   AgentEvent,
   AgentMessage,
+  AssistantMessage,
   ToolCallContent,
   ToolDefinition,
   ToolResult,
   ToolResultMessage,
 } from "../../shared/protocol";
-import { createAssistantMessage, text } from "./message";
+import { text } from "./message";
 import type { TeachingModel } from "./model";
 
 export type ToolRegistry = {
@@ -109,9 +110,7 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
     emit({ type: "turn_end", turn, message: assistant, toolResults });
   }
 
-  const guardrail = createAssistantMessage([
-    text(`已达到最大轮数（${maxTurns}），本次运行已停止。`),
-  ]);
+  const guardrail = createLoopGuardrailMessage(maxTurns);
   context.push(guardrail);
   newMessages.push(guardrail);
   emitMessageLifecycle(guardrail, emit);
@@ -132,4 +131,15 @@ function emitMessageLifecycle(
     }
   }
   emit({ type: "message_end", message });
+}
+
+function createLoopGuardrailMessage(maxTurns: number): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [text(`已达到最大轮数（${maxTurns}），本次运行已停止。`)],
+    stopReason: "error",
+    usage: { input: 0, output: 0, totalTokens: 0 },
+    timestamp: Date.now(),
+    errorMessage: "max_turns_exceeded",
+  };
 }

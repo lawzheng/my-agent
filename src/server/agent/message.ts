@@ -1,4 +1,4 @@
-import type { AgentMessage, AssistantMessage, TextContent, UserMessage } from "../../shared/protocol";
+import type { AssistantMessage, TextContent, ToolCallContent, UserMessage } from "../../shared/protocol";
 
 export function text(value: string): TextContent {
   return { type: "text", text: value };
@@ -21,7 +21,7 @@ export function createAssistantMessage(
   };
 }
 
-export function messageText(message: AgentMessage): string {
+export function messageText(message: { content: Array<TextContent | ToolCallContent> }): string {
   return message.content.reduce<string[]>((parts, block) => {
     if (block.type === "text") parts.push(block.text);
     return parts;
