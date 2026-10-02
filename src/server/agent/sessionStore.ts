@@ -67,6 +67,16 @@ export class JsonlSessionStore {
     return context;
   }
 
+  getSessionId(): string {
+    const header = this.entries.find((entry) => entry.type === "session");
+    if (!header) throw new Error("Session store has not been initialized");
+    return header.id;
+  }
+
+  getEntries(): SessionEntry[] {
+    return this.entries.map((entry) => ({ ...entry }));
+  }
+
   async reset(): Promise<void> {
     await this.initialize();
     await this.enqueue(async () => {

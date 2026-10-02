@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join, resolve as resolvePath } from "node:path";
 import { tmpdir } from "node:os";
+import type { AddressInfo } from "node:net";
 import { runAgentLoop } from "./agent/loop";
 import { createAssistantMessage, createUserMessage, messageText, text } from "./agent/message";
 import { MockModel } from "./agent/mockModel";
 import { JsonlSessionStore } from "./agent/sessionStore";
 import { createToolRegistry } from "./agent/tools";
+import { createApp } from "./index";
 
 const registry = createToolRegistry(resolvePath(process.cwd(), "workspace"));
 const definitions = registry.definitions();
@@ -102,4 +104,55 @@ try {
   await rm(sessionDirectory, { recursive: true, force: true });
 }
 
-console.log("Step 3 and Step 4 smoke checks passed.");
+const apiDirectory = await mkdtemp(join(tmpdir(), "teaching-agent-api-"));
+const apiStore = new JsonlSessionStore(join(apiDirectory, "session.jsonl"), process.cwd());
+const api = createApp({ store: apiStore, model: new MockModel(), toolRegistry: registry });
+const server = api.listen(0, "127.0.0.1");
+try {
+  await new Promise<void>((resolve, reject) => {
+    server.once("listening", resolve);
+    server.once("error", reject);
+  });
+  const address = server.address() as AddressInfo;
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  const emptySessionResponse = await fetch(`${baseUrl}/api/session`);
+  assert.equal(emptySessionResponse.status, 200);
+  const emptySession = await emptySessionResponse.json();
+  assert.equal(emptySession.messages.length, 0);
+  assert.equal(emptySession.tools.length, 3);
+
+  const emptyPromptResponse = await fetch(`${baseUrl}/api/prompt`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: "   " }),
+  });
+  assert.equal(emptyPromptResponse.status, 400);
+
+  const promptResponse = await fetch(`${baseUrl}/api/prompt`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text: "列出工作区文件" }),
+  });
+  assert.equal(promptResponse.status, 200);
+  const promptedSession = await promptResponse.json();
+  assert.deepEqual(
+    promptedSession.messages.map((message: { role: string }) => message.role),
+    ["user", "assistant", "toolResult", "assistant"],
+  );
+  assert.ok(promptedSession.events.some((event: { type: string }) => event.type === "tool_execution_start"));
+  assert.ok(promptedSession.tools.every((tool: Record<string, unknown>) => !("execute" in tool)));
+
+  const resetResponse = await fetch(`${baseUrl}/api/reset`, { method: "POST" });
+  assert.equal(resetResponse.status, 200);
+  const resetSession = await resetResponse.json();
+  assert.equal(resetSession.messages.length, 0);
+  assert.equal(resetSession.events.length, 0);
+} finally {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
+  await rm(apiDirectory, { recursive: true, force: true });
+}
+
+console.log("Step 3, Step 4, and Step 5 smoke checks passed.");
