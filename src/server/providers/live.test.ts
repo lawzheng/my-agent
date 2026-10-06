@@ -90,3 +90,63 @@ test("live: registry resolves the gateway model end to end", { skip: !enabled },
 
   assert.equal(message.stopReason, "stop", message.errorMessage ?? "no error message");
 });
+
+test("live: gateway streams text deltas that rebuild the final message", { skip: !enabled }, async () => {
+  const events = [];
+  for await (const event of createOpenAICompletionsAdapter().stream!(
+    {
+      model,
+      systemPrompt: "Count from 1 to 5, one number per line.",
+      messages: [createUserMessage("Go.")],
+      tools: [],
+    },
+  )) {
+    events.push(event);
+  }
+
+  const deltas = events.filter((event) => event.type === "text_delta");
+  assert.ok(deltas.length > 1, "expected multiple text deltas");
+
+  const done = events.at(-1);
+  assert.equal(done?.type, "done");
+  if (done?.type !== "done") return;
+  assert.equal(done.message.stopReason, "stop", done.message.errorMessage ?? "no error message");
+
+  const streamed = deltas.map((event) => event.delta).join("");
+  const finalText = done.message.content
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("");
+  assert.equal(streamed, finalText);
+});
+
+test("live: gateway streams a tool call", { skip: !enabled }, async () => {
+  const events = [];
+  for await (const event of createOpenAICompletionsAdapter().stream!(
+    {
+      model,
+      systemPrompt: "You are a teaching agent. Use the provided tools when asked.",
+      messages: [createUserMessage("列出工作区文件")],
+      tools: [
+        {
+          name: "list_files",
+          description: "List files in the workspace.",
+          parameters: {
+            type: "object",
+            properties: { path: { type: "string" } },
+            additionalProperties: false,
+          },
+        },
+      ],
+    },
+  )) {
+    events.push(event);
+  }
+
+  const done = events.at(-1);
+  assert.equal(done?.type, "done");
+  if (done?.type !== "done") return;
+  assert.equal(done.message.stopReason, "toolUse", done.message.errorMessage ?? "no error message");
+  const toolCall = done.message.content.find((block) => block.type === "toolCall");
+  assert.equal(toolCall?.type === "toolCall" && toolCall.name, "list_files");
+});

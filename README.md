@@ -37,6 +37,16 @@ The provider layer mirrors Pi's design in four parts:
 Because `loop.ts` only depends on the `TeachingModel` interface, adding a provider
 never touches the loop, the session store, or the UI.
 
+### Streaming
+
+`TeachingModel` (and `ApiAdapter`) expose an optional `stream()` alongside
+`complete()`. When present, the agent loop consumes it and emits incremental
+`message_update` events; when absent, the loop falls back to a single `complete`
+call. The OpenAI adapter parses SSE itself: text deltas, tool-call arguments
+split across chunks, usage from the final chunk, `[DONE]`, and `:` heartbeats.
+
+The UI calls `POST /api/prompt/stream` and renders assistant text as it arrives.
+
 ## Quick start
 
 ```bash
@@ -107,6 +117,7 @@ changes when context gets compacted.
 |---|---|---|
 | `GET` | `/api/session` | Session context, events, tools, entries |
 | `POST` | `/api/prompt` | Append a user message and run the agent loop |
+| `POST` | `/api/prompt/stream` | Same, as server-sent events (`agent` frames + a final `done`) |
 | `POST` | `/api/reset` | Clear the session |
 | `GET` | `/api/models` | Available models + current selection |
 | `POST` | `/api/model` | Switch the active model (`{ "ref": "provider/model" }`) |
