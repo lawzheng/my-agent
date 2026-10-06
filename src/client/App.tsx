@@ -3,6 +3,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import type {
   AgentEvent,
   AgentMessage,
+  ModelsResponse,
   SessionEntry,
   SessionResponse,
   TextContent,
@@ -18,20 +19,44 @@ const EMPTY_SESSION: SessionResponse = {
   entries: [],
 };
 
+const EMPTY_MODELS: ModelsResponse = { current: "", models: [] };
+
 export function App() {
   const [session, setSession] = useState<SessionResponse>(EMPTY_SESSION);
+  const [models, setModels] = useState<ModelsResponse>(EMPTY_MODELS);
   const [input, setInput] = useState("列出工作区文件");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
     void refresh();
+    void refreshModels();
   }, []);
 
   async function refresh() {
     setError("");
     const response = await fetch("/api/session");
     setSession(await response.json());
+  }
+
+  async function refreshModels() {
+    const response = await fetch("/api/models");
+    if (response.ok) setModels(await response.json());
+  }
+
+  async function selectModel(ref: string) {
+    setError("");
+    const response = await fetch("/api/model", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ref }),
+    });
+    if (!response.ok) {
+      const payload = (await response.json()) as { error?: string };
+      setError(payload.error ?? "切换模型失败");
+      return;
+    }
+    setModels(await response.json());
   }
 
   async function reset() {
@@ -44,7 +69,6 @@ export function App() {
       setIsLoading(false);
     }
   }
-
   async function submit(event: FormEvent) {
     event.preventDefault();
     const text = input.trim();
@@ -83,6 +107,20 @@ export function App() {
             <h1>Teaching Agent</h1>
           </div>
           <div className="toolbar">
+            <label className="model-picker">
+              <span>Model</span>
+              <select
+                value={models.current}
+                onChange={(event) => void selectModel(event.target.value)}
+                disabled={isLoading || models.models.length === 0}
+              >
+                {models.models.map((model) => (
+                  <option key={model.ref} value={model.ref}>
+                    {model.label}
+                  </option>
+                ))}
+              </select>
+            </label>
             <button type="button" className="icon-button" aria-label="刷新会话" onClick={refresh} disabled={isLoading}>
               <RefreshCw size={18} />
             </button>
