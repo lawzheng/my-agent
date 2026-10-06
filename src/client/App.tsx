@@ -10,6 +10,7 @@ import type {
   ToolCallContent,
   ToolDefinition,
 } from "../shared/protocol";
+import { withCoalescedEvent } from "../shared/events";
 
 const EMPTY_SESSION: SessionResponse = {
   sessionId: "",
@@ -98,7 +99,7 @@ export function App() {
 
       await consumeEventStream(response.body, {
         onAgentEvent: (agentEvent) => {
-          setLiveEvents((previous) => [...previous, agentEvent]);
+          setLiveEvents((previous) => withCoalescedEvent(previous, agentEvent));
           if (agentEvent.type === "message_start" && agentEvent.message.role === "assistant") {
             setStreamingText("");
           } else if (agentEvent.type === "message_update") {
@@ -329,7 +330,7 @@ function summarizeEvents(events: AgentEvent[]): string[] {
       case "message_end":
         return `${event.type}: ${event.message.role}`;
       case "message_update":
-        return `message_update: ${event.delta.slice(0, 48)}`;
+        return `message_update: ${previewDelta(event.delta)}`;
       case "tool_execution_start":
         return `tool_start: ${event.toolName}`;
       case "tool_execution_end":
@@ -342,6 +343,12 @@ function summarizeEvents(events: AgentEvent[]): string[] {
         return event.type;
     }
   });
+}
+
+function previewDelta(delta: string): string {
+  const flattened = delta.replace(/\s+/g, " ").trim();
+  if (flattened.length <= 48) return flattened;
+  return `${flattened.slice(-48)} (${delta.length} chars)`;
 }
 
 function buildSessionTree(entries: SessionEntry[]): SessionTreeNode[] {

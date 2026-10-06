@@ -2,6 +2,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentEvent, ModelInfo, ModelsResponse, SessionResponse } from "../shared/protocol";
+import { appendCoalescedEvent } from "../shared/events";
 import { runAgentLoop } from "./agent/loop";
 import { createUserMessage } from "./agent/message";
 import { JsonlSessionStore } from "./agent/sessionStore";
@@ -44,7 +45,7 @@ export function createApp(options: TeachingAgentApiOptions) {
   };
 
   const appendEvent = (event: AgentEvent): void => {
-    eventLog.push(event);
+    appendCoalescedEvent(eventLog, event);
     if (eventLog.length > 1000) eventLog.splice(0, eventLog.length - 1000);
   };
 
