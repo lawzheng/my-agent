@@ -1,0 +1,42 @@
+{
+  "defaultModel": "magpie/workbuddy-ai/deepseek-v4.1-flash",
+  "providers": {
+    "magpie": {
+      "label": "Magpie Gateway",
+      "api": "openai-completions",
+      "baseUrl": "http://127.0.0.1:3425/v1",
+      "apiKey": "$MAGPIE_API_KEY",
+      "models": [
+        {
+          "id": "workbuddy-ai/deepseek-v4.1-flash",
+          "label": "Deepseek-V4.1-Flash",
+          "contextWindow": 1000000,
+          "maxOutputTokens": 32000
+        },
+        {
+          "id": "workbuddy-ai/balanced-model",
+          "label": "Balanced",
+          "contextWindow": 256000,
+          "maxOutputTokens": 32000
+        },
+        {
+          "id": "workbuddy-ai/fast-model",
+          "label": "Fast",
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000
+        }
+      ]
+    },
+    "mock": {
+      "label": "Mock (offline)",
+      "api": "mock",
+      "baseUrl": "mock://offline",
+      "models": [
+        {
+          "id": "mock",
+          "label": "Mock Model"
+        }
+      ]
+    }
+  }
+}

@@ -84,3 +84,17 @@ export type SessionResponse = {
   tools: ToolDefinition[];
   entries: SessionEntry[];
 };
+
+export type ModelInfo = {
+  ref: string;
+  providerId: string;
+  modelId: string;
+  label: string;
+  contextWindow: number;
+  supportsTools: boolean;
+};
+
+export type ModelsResponse = {
+  current: string;
+  models: ModelInfo[];
+};

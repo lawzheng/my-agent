@@ -8,7 +8,8 @@ import { createAssistantMessage, createUserMessage, messageText, text } from "./
 import { MockModel } from "./agent/mockModel";
 import { JsonlSessionStore } from "./agent/sessionStore";
 import { createToolRegistry } from "./agent/tools";
-import { createApp } from "./index";
+import { createApp, createProviderRegistry } from "./index";
+import { createModelRuntime } from "./providers/registry";
 
 const registry = createToolRegistry(resolvePath(process.cwd(), "workspace"));
 const definitions = registry.definitions();
@@ -106,7 +107,9 @@ try {
 
 const apiDirectory = await mkdtemp(join(tmpdir(), "teaching-agent-api-"));
 const apiStore = new JsonlSessionStore(join(apiDirectory, "session.jsonl"), process.cwd());
-const api = createApp({ store: apiStore, model: new MockModel(), toolRegistry: registry });
+const { registry: providerRegistry } = createProviderRegistry();
+const apiRuntime = createModelRuntime(providerRegistry, "mock/mock");
+const api = createApp({ store: apiStore, runtime: apiRuntime, toolRegistry: registry });
 const server = api.listen(0, "127.0.0.1");
 try {
   await new Promise<void>((resolve, reject) => {
