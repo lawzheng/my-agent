@@ -22,7 +22,7 @@ export type UserMessage = {
 export type AssistantMessage = {
   role: "assistant";
   content: Array<TextContent | ToolCallContent>;
-  stopReason: "stop" | "toolUse" | "error" | "aborted";
+  stopReason: "pending" | "stop" | "toolUse" | "error" | "aborted";
   usage: Usage;
   timestamp: number;
   errorMessage?: string;
@@ -39,6 +39,15 @@ export type ToolResultMessage = {
 };
 
 export type AgentMessage = UserMessage | AssistantMessage | ToolResultMessage;
+
+/**
+ * Incremental events produced while a model response streams. `text_delta`
+ * carries one chunk of assistant text; `done` always carries the finalized
+ * message (including tool calls and usage), or an error message on failure.
+ */
+export type ModelStreamEvent =
+  | { type: "text_delta"; delta: string }
+  | { type: "done"; message: AssistantMessage };
 
 export type ToolDefinition = {
   name: string;

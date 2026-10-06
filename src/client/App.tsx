@@ -26,6 +26,9 @@ export function App() {
   const [models, setModels] = useState<ModelsResponse>(EMPTY_MODELS);
   const [input, setInput] = useState("列出工作区文件");
   const [isLoading, setIsLoading] = useState(false);
+  const [streamingText, setStreamingText] = useState("");
+  const [pendingUser, setPendingUser] = useState("");
+  const [liveEvents, setLiveEvents] = useState<AgentEvent[]>([]);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -65,36 +68,58 @@ export function App() {
     try {
       const response = await fetch("/api/reset", { method: "POST" });
       setSession(await response.json());
+      setStreamingText("");
+      setLiveEvents([]);
     } finally {
       setIsLoading(false);
     }
   }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     const text = input.trim();
     if (!text) return;
     setIsLoading(true);
     setError("");
+    setStreamingText("");
+    setLiveEvents([]);
+    setPendingUser(text);
+
     try {
-      const response = await fetch("/api/prompt", {
+      const response = await fetch("/api/prompt/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
       });
-      if (!response.ok) {
-        const payload = (await response.json()) as { error?: string };
+      if (!response.ok || !response.body) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string };
         throw new Error(payload.error ?? "Request failed");
       }
-      setSession(await response.json());
+
+      await consumeEventStream(response.body, {
+        onAgentEvent: (agentEvent) => {
+          setLiveEvents((previous) => [...previous, agentEvent]);
+          if (agentEvent.type === "message_start" && agentEvent.message.role === "assistant") {
+            setStreamingText("");
+          } else if (agentEvent.type === "message_update") {
+            setStreamingText((previous) => previous + agentEvent.delta);
+          }
+        },
+        onDone: (payload) => setSession(payload),
+        onError: (message) => setError(message),
+      });
       setInput("");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setIsLoading(false);
+      setStreamingText("");
+      setPendingUser("");
     }
   }
 
   const eventLines = useMemo(() => summarizeEvents(session.events), [session.events]);
+  const liveEventLines = useMemo(() => summarizeEvents(liveEvents), [liveEvents]);
   const sessionTree = useMemo(() => buildSessionTree(session.entries), [session.entries]);
   const activeLeafId = session.entries.length > 0 ? session.entries[session.entries.length - 1].id : null;
 
@@ -131,15 +156,28 @@ export function App() {
         </header>
 
         <div className="chat-list">
-          {session.messages.length === 0 ? (
+          {session.messages.length === 0 && !pendingUser && !streamingText ? (
             <div className="empty-state">
               <Sparkles size={28} />
               <p>输入一个目标，观察模型如何决定直接回答或调用工具。</p>
             </div>
           ) : (
-            session.messages.map((message, index) => (
-              <MessageCard key={`${message.timestamp}-${index}`} message={message} />
-            ))
+            <>
+              {session.messages.map((message, index) => (
+                <MessageCard key={`${message.timestamp}-${index}`} message={message} />
+              ))}
+              {pendingUser ? (
+                <MessageCard message={{ role: "user", content: [{ type: "text", text: pendingUser }], timestamp: Date.now() }} />
+              ) : null}
+              {streamingText ? (
+                <article className="message-card message-assistant">
+                  <div className="message-role">assistant (streaming)</div>
+                  <div className="message-body">
+                    <p>{streamingText}</p>
+                  </div>
+                </article>
+              ) : null}
+            </>
           )}
         </div>
 
@@ -183,7 +221,7 @@ export function App() {
         <section className="panel-section">
           <h2>Event Timeline</h2>
           <div className="event-list">
-            {eventLines.map((line, index) => (
+            {(isLoading ? liveEventLines : eventLines).map((line, index) => (
               <div key={`${line}-${index}`} className="event-row">
                 {line}
               </div>
@@ -349,4 +387,63 @@ function entryLabel(entry: Exclude<SessionEntry, { type: "session" }>): string {
 
   const content = messageText(message).replace(/\s+/g, " ").slice(0, 34);
   return `${entry.id} user${content ? `: ${content}` : ""}`;
+}
+
+type StreamHandlers = {
+  onAgentEvent: (event: AgentEvent) => void;
+  onDone: (session: SessionResponse) => void;
+  onError: (message: string) => void;
+};
+
+/**
+ * Minimal SSE reader for POST responses. `EventSource` only supports GET, so we
+ * parse the `event:` / `data:` frames ourselves from the fetch body stream.
+ */
+async function consumeEventStream(
+  body: ReadableStream<Uint8Array>,
+  handlers: StreamHandlers,
+): Promise<void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let boundary: number;
+      while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+        const frame = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        dispatchFrame(frame, handlers);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function dispatchFrame(frame: string, handlers: StreamHandlers): void {
+  let eventName = "message";
+  const dataLines: string[] = [];
+
+  for (const rawLine of frame.split("\n")) {
+    const line = rawLine.replace(/\r$/, "");
+    if (line.startsWith("event:")) eventName = line.slice(6).trim();
+    else if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+  }
+  if (dataLines.length === 0) return;
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(dataLines.join("\n"));
+  } catch {
+    return;
+  }
+
+  if (eventName === "agent") handlers.onAgentEvent(payload as AgentEvent);
+  else if (eventName === "done") handlers.onDone(payload as SessionResponse);
+  else if (eventName === "error") handlers.onError((payload as { error?: string }).error ?? "Stream failed");
 }

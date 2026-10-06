@@ -1,6 +1,6 @@
-import type { TeachingModel } from "../agent/model";
+import type { CompleteInput, TeachingModel } from "../agent/model";
 import { interpolate, resolveSecret } from "./interpolate";
-import { MODEL_DEFAULTS, type ApiAdapter, type ProviderDefinition, type ResolvedModel } from "./types";
+import { MODEL_DEFAULTS, type ApiAdapter, type ApiRequest, type ProviderDefinition, type ResolvedModel } from "./types";
 
 export type ModelRuntime = {
   list(): ResolvedModel[];
@@ -96,15 +96,20 @@ export class ProviderRegistry {
     const adapter = this.adapters.get(resolved.api);
     if (!adapter) throw new Error(`No adapter registered for api "${resolved.api}"`);
 
-    return {
-      complete: (input) =>
-        adapter.complete({
-          model: resolved,
-          systemPrompt: input.systemPrompt,
-          messages: input.messages,
-          tools: input.tools,
-        }),
+    const request = (input: CompleteInput): ApiRequest => ({
+      model: resolved,
+      systemPrompt: input.systemPrompt,
+      messages: input.messages,
+      tools: input.tools,
+    });
+
+    const model: TeachingModel = {
+      complete: (input) => adapter.complete(request(input)),
     };
+    if (adapter.stream) {
+      model.stream = (input, signal) => adapter.stream!(request(input), signal);
+    }
+    return model;
   }
 
   private requireFirstRef(): string {

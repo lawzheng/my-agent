@@ -68,6 +68,47 @@ export function createApp(options: TeachingAgentApiOptions) {
     })),
   });
 
+  /**
+   * Shared prompt pipeline: persist the user message, compact if needed, run the
+   * loop, persist the new messages, and return the refreshed session. Both the
+   * buffered and streaming endpoints use it so their behavior stays identical.
+   */
+  const runPrompt = async (
+    input: string,
+    onEvent: (event: AgentEvent) => void,
+  ): Promise<SessionResponse> => {
+    const model = options.runtime.current();
+    const userMessage = createUserMessage(input);
+    await options.store.appendMessage(userMessage);
+
+    const compaction = await options.store.compactIfNeeded(
+      resolveCompactionThreshold(model.contextWindow),
+      8,
+    );
+    if (compaction) {
+      onEvent({
+        type: "compaction",
+        summary: compaction.summary,
+        tokensBefore: compaction.tokensBefore,
+        firstKeptEntryId: compaction.firstKeptEntryId,
+      });
+    }
+
+    const result = await runAgentLoop({
+      systemPrompt: options.systemPrompt ?? systemPrompt,
+      messages: options.store.buildContext(),
+      tools: options.toolRegistry.definitions(),
+      model: options.runtime.createModel(),
+      toolRegistry: options.toolRegistry,
+      onEvent,
+    });
+
+    for (const message of result.newMessages) {
+      await options.store.appendMessage(message);
+    }
+    return createResponse();
+  };
+
   app.get("/api/session", async (_request, response) => {
     await enqueue(async () => {
       await options.store.initialize();
@@ -107,36 +148,43 @@ export function createApp(options: TeachingAgentApiOptions) {
     }
 
     await enqueue(async () => {
-      const model = options.runtime.current();
-      const userMessage = createUserMessage(input);
-      await options.store.appendMessage(userMessage);
+      const result = await runPrompt(input, appendEvent);
+      response.json(result);
+    });
+  });
 
-      const compaction = await options.store.compactIfNeeded(
-        resolveCompactionThreshold(model.contextWindow),
-        8,
-      );
-      if (compaction) {
-        appendEvent({
-          type: "compaction",
-          summary: compaction.summary,
-          tokensBefore: compaction.tokensBefore,
-          firstKeptEntryId: compaction.firstKeptEntryId,
+  /**
+   * Streaming variant of /api/prompt. Sends server-sent events as the agent loop
+   * progresses, then a final `done` event carrying the complete session.
+   */
+  app.post("/api/prompt/stream", async (request, response) => {
+    const input = typeof request.body?.text === "string" ? request.body.text.trim() : "";
+    if (!input) {
+      response.status(400).json({ error: "text is required" });
+      return;
+    }
+
+    response.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    response.setHeader("Cache-Control", "no-cache, no-transform");
+    response.setHeader("Connection", "keep-alive");
+    response.flushHeaders?.();
+
+    const send = (event: string, data: unknown): void => {
+      response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    await enqueue(async () => {
+      try {
+        const result = await runPrompt(input, (event) => {
+          appendEvent(event);
+          send("agent", event);
         });
+        send("done", result);
+      } catch (error) {
+        send("error", { error: error instanceof Error ? error.message : "Internal server error" });
+      } finally {
+        response.end();
       }
-
-      const result = await runAgentLoop({
-        systemPrompt: options.systemPrompt ?? systemPrompt,
-        messages: options.store.buildContext(),
-        tools: options.toolRegistry.definitions(),
-        model: options.runtime.createModel(),
-        toolRegistry: options.toolRegistry,
-        onEvent: appendEvent,
-      });
-
-      for (const message of result.newMessages) {
-        await options.store.appendMessage(message);
-      }
-      response.json(createResponse());
     });
   });
 

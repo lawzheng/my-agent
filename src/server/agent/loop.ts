@@ -22,6 +22,7 @@ export type RunAgentLoopOptions = {
   model: TeachingModel;
   toolRegistry: ToolRegistry;
   maxTurns?: number;
+  signal?: AbortSignal;
   onEvent?: (event: AgentEvent) => void;
 };
 
@@ -48,14 +49,10 @@ export async function runAgentLoop(options: RunAgentLoopOptions): Promise<RunAge
 
   for (let turn = 1; turn <= maxTurns; turn++) {
     emit({ type: "turn_start", turn });
-    const assistant = await options.model.complete({
-      systemPrompt: options.systemPrompt,
-      messages: context,
-      tools: options.tools,
-    });
+    const assistant = await completeAssistant(options.model, context, options, emit);
     context.push(assistant);
     newMessages.push(assistant);
-    emitMessageLifecycle(assistant, emit);
+    emit({ type: "message_end", message: assistant });
 
     const toolCalls = assistant.content.filter(
       (block): block is ToolCallContent => block.type === "toolCall",
@@ -123,14 +120,79 @@ function emitMessageLifecycle(
   emit: (event: AgentEvent) => void,
 ): void {
   emit({ type: "message_start", message });
-  if (message.role === "assistant") {
-    for (const block of message.content) {
-      if (block.type === "text") {
-        emit({ type: "message_update", message, delta: block.text });
-      }
+  emitAssistantText(message, emit);
+  emit({ type: "message_end", message });
+}
+
+function emitAssistantText(
+  message: AgentMessage,
+  emit: (event: AgentEvent) => void,
+): void {
+  if (message.role !== "assistant") return;
+  for (const block of message.content) {
+    if (block.type === "text") {
+      emit({ type: "message_update", message, delta: block.text });
     }
   }
-  emit({ type: "message_end", message });
+}
+
+/**
+ * Produce one assistant message. When the model supports streaming, text is
+ * emitted chunk by chunk via `message_update` and the finalized message is
+ * returned; otherwise it falls back to a single `complete` call.
+ */
+async function completeAssistant(
+  model: TeachingModel,
+  context: AgentMessage[],
+  options: RunAgentLoopOptions,
+  emit: (event: AgentEvent) => void,
+): Promise<AssistantMessage> {
+  const input = {
+    systemPrompt: options.systemPrompt,
+    messages: context,
+    tools: options.tools,
+  };
+
+  if (!model.stream) {
+    const assistant = await model.complete(input);
+    emit({ type: "message_start", message: assistant });
+    emitAssistantText(assistant, emit);
+    return assistant;
+  }
+
+  // Announce a placeholder first so the UI can open a bubble, then grow it as
+  // text arrives. The finalized message is emitted as `message_end`.
+  const placeholder: AssistantMessage = {
+    role: "assistant",
+    content: [],
+    stopReason: "pending",
+    usage: { input: 0, output: 0, totalTokens: 0 },
+    timestamp: Date.now(),
+  };
+  emit({ type: "message_start", message: placeholder });
+
+  let finalized: AssistantMessage | undefined;
+  for await (const event of model.stream(input, options.signal)) {
+    if (event.type === "text_delta") {
+      emit({ type: "message_update", message: placeholder, delta: event.delta });
+    } else {
+      finalized = event.message;
+    }
+  }
+
+  const assistant = finalized ?? createStreamGuardrailMessage();
+  return assistant;
+}
+
+function createStreamGuardrailMessage(): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [text("模型流意外结束，没有返回最终消息。")],
+    stopReason: "error",
+    usage: { input: 0, output: 0, totalTokens: 0 },
+    timestamp: Date.now(),
+    errorMessage: "stream_incomplete",
+  };
 }
 
 function createLoopGuardrailMessage(maxTurns: number): AssistantMessage {

@@ -104,4 +104,66 @@ describe("runAgentLoop", () => {
     assert.equal((last as AssistantMessage).stopReason, "error");
     assert.equal((last as AssistantMessage).errorMessage, "max_turns_exceeded");
   });
+
+  test("streams text as incremental message_update events", async () => {
+    const streamingModel: TeachingModel = {
+      async complete() {
+        throw new Error("complete should not be called when stream is available");
+      },
+      async *stream() {
+        for (const delta of ["Hel", "lo", " world"]) {
+          yield { type: "text_delta", delta };
+        }
+        yield {
+          type: "done",
+          message: createAssistantMessage([text("Hello world")]),
+        };
+      },
+    };
+
+    const result = await runAgentLoop({
+      systemPrompt: "You are a teaching agent.",
+      messages: [createUserMessage("hi")],
+      tools: [],
+      model: streamingModel,
+      toolRegistry: new ToolRegistry(),
+    });
+
+    const deltas = result.events
+      .filter((event) => event.type === "message_update")
+      .map((event) => (event as { delta: string }).delta);
+    assert.deepEqual(deltas, ["Hel", "lo", " world"]);
+
+    const starts = result.events.filter((event) => event.type === "message_start");
+    assert.equal(starts.length, 1);
+    assert.equal((starts[0] as { message: AssistantMessage }).message.stopReason, "pending");
+
+    const ends = result.events.filter((event) => event.type === "message_end");
+    assert.equal(ends.length, 1);
+    assert.equal((ends[0] as { message: AssistantMessage }).message.stopReason, "stop");
+    assert.equal(messageText(result.newMessages[0]), "Hello world");
+  });
+
+  test("turns an incomplete stream into an error message", async () => {
+    const brokenModel: TeachingModel = {
+      async complete() {
+        throw new Error("unused");
+      },
+      async *stream() {
+        yield { type: "text_delta", delta: "partial" };
+      },
+    };
+
+    const result = await runAgentLoop({
+      systemPrompt: "You are a teaching agent.",
+      messages: [createUserMessage("hi")],
+      tools: [],
+      model: brokenModel,
+      toolRegistry: new ToolRegistry(),
+    });
+
+    const last = result.newMessages.at(-1) as AssistantMessage;
+    assert.equal(last.stopReason, "error");
+    assert.equal(last.errorMessage, "stream_incomplete");
+  });
 });

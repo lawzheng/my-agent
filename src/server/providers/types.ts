@@ -1,4 +1,4 @@
-import type { AgentMessage, AssistantMessage, ToolDefinition } from "../../shared/protocol";
+import type { AgentMessage, AssistantMessage, ModelStreamEvent, ToolDefinition } from "../../shared/protocol";
 
 /**
  * A single model advertised by a provider. Everything except `id` is optional and
@@ -61,10 +61,14 @@ export type ApiRequest = {
  * The wire-protocol layer. One adapter per API family (OpenAI Chat Completions,
  * Anthropic Messages, ...). It must never throw for provider failures: return an
  * AssistantMessage with stopReason "error" so the agent loop can surface it.
+ *
+ * `stream` is optional. When implemented, the final `done` event must carry the
+ * same finalized message `complete` would return.
  */
 export interface ApiAdapter {
   readonly id: string;
   complete(request: ApiRequest, signal?: AbortSignal): Promise<AssistantMessage>;
+  stream?(request: ApiRequest, signal?: AbortSignal): AsyncIterable<ModelStreamEvent>;
 }
 
 export const MODEL_DEFAULTS = {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { AgentMessage, ToolDefinition } from "../../../shared/protocol";
+import type { AgentMessage, ModelStreamEvent, ToolDefinition } from "../../../shared/protocol";
 import { createAssistantMessage, createUserMessage, text } from "../../agent/message";
 import type { ResolvedModel } from "../types";
 import {
@@ -205,4 +205,112 @@ test("fromWireResponse tolerates malformed tool arguments", () => {
     name: "list_files",
     arguments: {},
   });
+});
+
+function sseResponse(chunks: unknown[]): Response {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) {
+        const line = chunk === "[DONE]" ? "data: [DONE]" : `data: ${JSON.stringify(chunk)}`;
+        controller.enqueue(encoder.encode(`${line}\n\n`));
+      }
+      controller.close();
+    },
+  });
+  return new Response(body, { status: 200 });
+}
+
+async function collect(adapter: ReturnType<typeof createOpenAICompletionsAdapter>, signal?: AbortSignal) {
+  const events: ModelStreamEvent[] = [];
+  for await (const event of adapter.stream!(
+    { model, systemPrompt: "sys", messages: [createUserMessage("hi")], tools: [] },
+    signal,
+  )) {
+    events.push(event);
+  }
+  return events;
+}
+
+function doneMessage(events: ModelStreamEvent[]) {
+  const last = events.at(-1);
+  assert.equal(last?.type, "done");
+  if (last?.type !== "done") throw new Error("expected a done event");
+  return last.message;
+}
+
+test("stream emits text deltas and finalizes the message", async () => {
+  const fetchImpl = (async () =>
+    sseResponse([
+      { choices: [{ delta: { role: "assistant", content: "Hel" }, finish_reason: null }] },
+      { choices: [{ delta: { content: "lo" }, finish_reason: null }] },
+      { choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } },
+      "[DONE]",
+    ])) as unknown as typeof fetch;
+
+  const events = await collect(createOpenAICompletionsAdapter({ fetchImpl }));
+
+  assert.deepEqual(
+    events.filter((event) => event.type === "text_delta").map((event) => event.delta),
+    ["Hel", "lo"],
+  );
+  const done = doneMessage(events);
+  assert.equal(done.stopReason, "stop");
+  assert.equal(done.content[0].type === "text" && done.content[0].text, "Hello");
+  assert.deepEqual(done.usage, { input: 5, output: 2, totalTokens: 7 });
+});
+
+test("stream reassembles tool call arguments split across chunks", async () => {
+  const fetchImpl = (async () =>
+    sseResponse([
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_7", type: "function", function: { name: "list_files", arguments: "" } }] }, finish_reason: null }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"pa' } }] }, finish_reason: null }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'th":"."}' } }] }, finish_reason: "tool_calls" }] },
+      "[DONE]",
+    ])) as unknown as typeof fetch;
+
+  const events = await collect(createOpenAICompletionsAdapter({ fetchImpl }));
+  const done = doneMessage(events);
+  assert.equal(done.stopReason, "toolUse");
+  assert.deepEqual(done.content[0], {
+    type: "toolCall",
+    id: "call_7",
+    name: "list_files",
+    arguments: { path: "." },
+  });
+});
+
+test("stream ignores heartbeat comments and reports HTTP failures as error messages", async () => {
+  const okFetch = (async () => {
+    const encoder = new TextEncoder();
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(": heartbeat\n\n"));
+          controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\n'));
+          controller.close();
+        },
+      }),
+      { status: 200 },
+    );
+  }) as unknown as typeof fetch;
+
+  const events = await collect(createOpenAICompletionsAdapter({ fetchImpl: okFetch }));
+  assert.equal(doneMessage(events).stopReason, "stop");
+
+  const failFetch = (async () => new Response("nope", { status: 429 })) as unknown as typeof fetch;
+  const failed = await collect(createOpenAICompletionsAdapter({ fetchImpl: failFetch }));
+  assert.equal(doneMessage(failed).stopReason, "error");
+  assert.match(doneMessage(failed).errorMessage ?? "", /模型返回 429/);
+});
+
+test("stream reports an aborted signal as an aborted message", async () => {
+  const controller = new AbortController();
+  const fetchImpl = (async () => {
+    controller.abort();
+    throw new DOMException("aborted", "AbortError");
+  }) as unknown as typeof fetch;
+
+  const events = await collect(createOpenAICompletionsAdapter({ fetchImpl }), controller.signal);
+  assert.equal(doneMessage(events).stopReason, "aborted");
 });
